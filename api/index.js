@@ -67,7 +67,7 @@ const WORD_TEMPLATE_URL = process.env.WORD_TEMPLATE_URL;
 const LESSON_TEMPLATE_URL = process.env.LESSON_TEMPLATE_URL;
 
 const arabicTeachers = ['Majed', 'Jaber', 'Imad', 'Saeed'];
-const englishTeachers = ['Kamel'];
+const englishTeachers = ['Tonga', 'Kamel', 'Francis', 'Tamer', 'Khidr', 'Anwar', 'Wassim', 'Muhammed Ali', 'Abdulrahman', 'Hamed', 'Sami', 'Mohamed Ali'];
 
 const specificWeekDateRangesNode = {
   1:{start:'2025-08-31',end:'2025-09-04'}, 2:{start:'2025-09-07',end:'2025-09-11'}, 3:{start:'2025-09-14',end:'2025-09-18'}, 4:{start:'2025-09-21',end:'2025-09-25'}, 5:{start:'2025-09-28',end:'2025-10-02'}, 6:{start:'2025-10-05',end:'2025-10-09'}, 7:{start:'2025-10-12',end:'2025-10-16'}, 8:{start:'2025-10-19',end:'2025-10-23'}, 9:{start:'2025-10-26',end:'2025-10-30'},10:{start:'2025-11-02',end:'2025-11-06'},
@@ -78,9 +78,10 @@ const specificWeekDateRangesNode = {
 };
 
 const validUsers = {
-  "Mohamed": "Mohamed", "Abas": "Abas", "Jaber": "Jaber", "Imad": "Imad", "Kamel": "Kamel",
-  "Majed": "Majed", "Mohamed Ali": "Mohamed Ali", "Morched": "Morched",
-  "Saeed": "Saeed", "Sami": "Sami", "Sylvano": "Sylvano", "Tonga": "Tonga", "Oumarou": "Oumarou", "Zine": "Zine"
+  "Mohamed": "Mohamed", "Tonga": "Tonga", "Kamel": "Kamel", "Francis": "Francis", "Tamer": "Tamer",
+  "Khidr": "Khidr", "Anwar": "Anwar", "Wassim": "Wassim", "Muhammed Ali": "Muhammed Ali",
+  "Abdulrahman": "Abdulrahman", "Hamed": "Hamed", "Sami": "Sami", "Mohamed Ali": "Mohamed Ali",
+  "Majed": "Majed", "Jaber": "Jaber", "Imad": "Imad", "Saeed": "Saeed"
 };
 
 let cachedDb = null;
@@ -94,9 +95,9 @@ async function connectToDatabase() {
 }
 
 function formatDateFrenchNode(date) {
-  if (!date || isNaN(date.getTime())) return "Date invalide";
-  const days = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
-  const months = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+  if (!date || isNaN(date.getTime())) return "Invalid Date";
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const dayName = days[date.getUTCDay()];
   const dayNum = String(date.getUTCDate()).padStart(2, '0');
   const monthName = months[date.getUTCMonth()];
@@ -105,7 +106,7 @@ function formatDateFrenchNode(date) {
 }
 function getDateForDayNameNode(weekStartDate, dayName) {
   if (!weekStartDate || isNaN(weekStartDate.getTime())) return null;
-  const dayOrder = { "Dimanche": 0, "Lundi": 1, "Mardi": 2, "Mercredi": 3, "Jeudi": 4 };
+  const dayOrder = { "Sunday": 0, "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4 };
   const offset = dayOrder[dayName];
   if (offset === undefined) return null;
   const specificDate = new Date(Date.UTC(
@@ -263,7 +264,7 @@ app.post('/api/generate-word', async (req, res) => {
     });
 
     const groupedByDay = {};
-    const dayOrder = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi"];
+    const dayOrder = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"];
     const datesNode = specificWeekDateRangesNode[weekNumber];
     let weekStartDateNode = null;
     if (datesNode?.start) {
@@ -308,12 +309,12 @@ app.post('/api/generate-word', async (req, res) => {
       return { jourDateComplete: formattedDate, matieres: matieres };
     }).filter(Boolean);
 
-    let plageSemaineText = `Semaine ${weekNumber}`;
+    let plageSemaineText = `Week ${weekNumber}`;
     if (datesNode?.start && datesNode?.end) {
       const startD = new Date(datesNode.start + 'T00:00:00Z');
       const endD = new Date(datesNode.end + 'T00:00:00Z');
       if (!isNaN(startD.getTime()) && !isNaN(endD.getTime())) {
-        plageSemaineText = `du ${formatDateFrenchNode(startD)} à ${formatDateFrenchNode(endD)}`;
+        plageSemaineText = `from ${formatDateFrenchNode(startD)} to ${formatDateFrenchNode(endD)}`;
       }
     }
 
@@ -352,7 +353,7 @@ app.post('/api/generate-excel-workbook', async (req, res) => {
     const planDocument = await db.collection('plans').findOne({ week: weekNumber });
     if (!planDocument?.data?.length) return res.status(404).json({ message: `Aucune donnée pour S${weekNumber}.` });
 
-    const finalHeaders = [ 'Enseignant', 'Jour', 'Période', 'Classe', 'Matière', 'Leçon', 'Travaux de classe', 'Support', 'Devoirs' ];
+    const finalHeaders = [ 'Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Support', 'Homework' ];
     const formattedData = planDocument.data.map(item => {
       const row = {};
       finalHeaders.forEach(header => {
@@ -393,7 +394,7 @@ app.post('/api/full-report-by-class', async (req, res) => {
     if (!allPlans || allPlans.length === 0) return res.status(404).json({ message: 'Aucune donnée.' });
 
     const dataBySubject = {};
-    const monthsFrench = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+    const monthsFrench = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
     allPlans.forEach(plan => {
       const weekNumber = plan.week;
@@ -413,13 +414,13 @@ app.post('/api/full-report-by-class', async (req, res) => {
           const subject = item[itemSubjectKey];
           if (!dataBySubject[subject]) dataBySubject[subject] = [];
           const row = {
-            'Mois': monthName,
-            'Semaine': weekNumber,
-            'Période': item[findKey(item, 'période')] || '',
-            'Leçon': item[findKey(item, 'leçon')] || '',
-            'Travaux de classe': item[findKey(item, 'travaux de classe')] || '',
+            'Month': monthName,
+            'Week': weekNumber,
+            'Period': item[findKey(item, 'période')] || '',
+            'Lesson': item[findKey(item, 'leçon')] || '',
+            'Classwork': item[findKey(item, 'travaux de classe')] || '',
             'Support': item[findKey(item, 'support')] || '',
-            'Devoirs': item[findKey(item, 'devoirs')] || ''
+            'Homework': item[findKey(item, 'devoirs')] || ''
           };
           dataBySubject[subject].push(row);
         }
@@ -430,7 +431,7 @@ app.post('/api/full-report-by-class', async (req, res) => {
     if (subjectsFound.length === 0) return res.status(404).json({ message: `Aucune donnée pour la classe '${requestedClass}'.` });
 
     const workbook = XLSX.utils.book_new();
-    const headers = ['Mois', 'Semaine', 'Période', 'Leçon', 'Travaux de classe', 'Support', 'Devoirs'];
+    const headers = ['Month', 'Week', 'Period', 'Lesson', 'Classwork', 'Support', 'Homework'];
 
     subjectsFound.sort().forEach(subject => {
       const safeSheetName = subject.substring(0, 30).replace(/[*?:/\\\[\]]/g, '_');
