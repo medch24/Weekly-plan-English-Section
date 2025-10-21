@@ -65,6 +65,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 const MONGO_URL = process.env.MONGO_URL;
 const WORD_TEMPLATE_URL = process.env.WORD_TEMPLATE_URL;
 const LESSON_TEMPLATE_URL = process.env.LESSON_TEMPLATE_URL;
+const WORD_TEMPLATE2_URL = process.env.WORD_TEMPLATE2_URL; // For other classes (PEI1-5, DP1-2)
 
 const arabicTeachers = ['Majed', 'Jaber', 'Imad', 'Saeed'];
 const englishTeachers = ['Tamer', 'Mohamed Ali', 'Sami', 'Tonga', 'Francis', 'Muhammed Ali', 'Khidr', 'Hamed', 'Kamel', 'Abdulrahman', 'Wassim', 'Anwar'];
@@ -247,15 +248,20 @@ app.post('/api/generate-word', async (req, res) => {
       return res.status(400).json({ message: 'Invalid data.' });
     }
 
-    if (!WORD_TEMPLATE_URL) {
-      console.error("WORD_TEMPLATE_URL is not configured");
-      return res.status(500).json({ message: 'Word template URL is not configured on server.' });
+    // Determine which template to use based on class
+    const isG7orG8 = (classe === 'G7' || classe === 'G8');
+    const templateUrl = isG7orG8 ? WORD_TEMPLATE_URL : WORD_TEMPLATE2_URL;
+    const templateName = isG7orG8 ? 'WORD_TEMPLATE_URL (G7/G8)' : 'WORD_TEMPLATE2_URL (Other classes)';
+
+    if (!templateUrl) {
+      console.error(`${templateName} is not configured`);
+      return res.status(500).json({ message: `Word template URL is not configured on server for ${classe}.` });
     }
 
     let templateBuffer;
     try {
-      console.log(`Fetching Word template from: ${WORD_TEMPLATE_URL}`);
-      const response = await fetch(WORD_TEMPLATE_URL);
+      console.log(`Fetching Word template for ${classe} from ${templateName}: ${templateUrl}`);
+      const response = await fetch(templateUrl);
       if (!response.ok) throw new Error(`Failed to fetch Word template (${response.status})`);
       templateBuffer = Buffer.from(await response.arrayBuffer());
     } catch (e) {
