@@ -283,17 +283,17 @@ app.post('/api/generate-word', async (req, res) => {
       weekStartDateNode = new Date(datesNode.start + 'T00:00:00Z');
     }
     if (!weekStartDateNode || isNaN(weekStartDateNode.getTime())) {
-      return res.status(500).json({ message: `Dates serveur manquantes pour S${weekNumber}.` });
+      return res.status(500).json({ message: `Server dates missing for W${weekNumber}.` });
     }
 
     const sampleRow = data[0] || {};
-    const jourKey = findKey(sampleRow, 'Jour'),
-          periodeKey = findKey(sampleRow, 'Période'),
-          matiereKey = findKey(sampleRow, 'Matière'),
-          leconKey = findKey(sampleRow, 'Leçon'),
-          travauxKey = findKey(sampleRow, 'Travaux de classe'),
-          supportKey = findKey(sampleRow, 'Support'),
-          devoirsKey = findKey(sampleRow, 'Devoirs');
+    const jourKey = findKey(sampleRow, 'Day') || findKey(sampleRow, 'Jour');
+    const periodeKey = findKey(sampleRow, 'Period') || findKey(sampleRow, 'Période');
+    const matiereKey = findKey(sampleRow, 'Subject') || findKey(sampleRow, 'Matière');
+    const leconKey = findKey(sampleRow, 'Lesson') || findKey(sampleRow, 'Leçon');
+    const travauxKey = findKey(sampleRow, 'Classwork') || findKey(sampleRow, 'Travaux de classe');
+    const supportKey = findKey(sampleRow, 'Material') || findKey(sampleRow, 'Support');
+    const devoirsKey = findKey(sampleRow, 'Homework') || findKey(sampleRow, 'Devoirs');
 
     data.forEach(item => {
       const day = item[jourKey];
@@ -302,24 +302,6 @@ app.post('/api/generate-word', async (req, res) => {
         groupedByDay[day].push(item);
       }
     });
-
-    const joursData = dayOrder.map(dayName => {
-      if (!groupedByDay[dayName]) return null;
-
-      const dateOfDay = getDateForDayNameNode(weekStartDateNode, dayName);
-      const formattedDate = dateOfDay ? formatDateEnglishNode(dateOfDay) : dayName;
-      const sortedEntries = groupedByDay[dayName].sort((a, b) => (parseInt(a[periodeKey], 10) || 0) - (parseInt(b[periodeKey], 10) || 0));
-
-      const matieres = sortedEntries.map(item => ({
-        matiere: item[matiereKey] ?? "",
-        Lecon: formatTextForWord(item[leconKey], { color: 'FF0000' }),
-        travailDeClasse: formatTextForWord(item[travauxKey]),
-        Support: formatTextForWord(item[supportKey], { color: 'FF0000', italic: true }),
-        devoirs: formatTextForWord(item[devoirsKey], { color: '0000FF' })
-      }));
-
-      return { jourDateComplete: formattedDate, matieres: matieres };
-    }).filter(Boolean);
 
     let plageSemaineText = `Week ${weekNumber}`;
     if (datesNode?.start && datesNode?.end) {
@@ -330,19 +312,64 @@ app.post('/api/generate-word', async (req, res) => {
       }
     }
 
-    const templateData = {
-      semaine: weekNumber,
-      classe: classe,
-      jours: joursData,
-      notes: formatTextForWord(notes),
-      plageSemaine: plageSemaineText
-    };
+    // For G7/G8: Simple structure with Subject, Classwork, Homework grouped by day
+    if (isG7orG8) {
+      const joursData = dayOrder.map(dayName => {
+        if (!groupedByDay[dayName]) return null;
+        
+        const dateOfDay = getDateForDayNameNode(weekStartDateNode, dayName);
+        const formattedDate = dateOfDay ? formatDateEnglishNode(dateOfDay) : dayName;
+        const sortedEntries = groupedByDay[dayName].sort((a, b) => (parseInt(a[periodeKey], 10) || 0) - (parseInt(b[periodeKey], 10) || 0));
 
-    doc.render(templateData);
+        const matieres = sortedEntries.map(item => ({
+          matiere: item[matiereKey] ?? "",
+          travailDeClasse: item[travauxKey] ?? "",
+          devoirs: item[devoirsKey] ?? ""
+        }));
 
-    const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
-    const filename = `Plan_hebdomadaire_S${weekNumber}_${classe.replace(/[^a-z0-9]/gi, '_')}.docx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return { jourDateComplete: formattedDate, matieres: matieres };
+      }).filter(Boolean);
+
+      const templateData = {
+        semaine: weekNumber,
+        classe: classe,
+        jours: joursData,
+        notes: notes || "",
+        plageSemaine: plageSemaineText
+      };
+
+      doc.render(templateData);
+    } 
+    // For other classes: Detailed structure with Lesson, Classwork, Material, Homework
+    else {
+      const joursData = dayOrder.map(dayName => {
+        if (!groupedByDay[dayName]) return null;
+
+        const dateOfDay = getDateForDayNameNode(weekStartDateNode, dayName);
+        const formattedDate = dateOfDay ? formatDateEnglishNode(dateOfDay) : dayName;
+        const sortedEntries = groupedByDay[dayName].sort((a, b) => (parseInt(a[periodeKey], 10) || 0) - (parseInt(b[periodeKey], 10) || 0));
+
+        const matieres = sortedEntries.map(item => ({
+          matiere: item[matiereKey] ?? "",
+          Lecon: formatTextForWord(item[leconKey], { color: 'FF0000' }),
+          travailDeClasse: formatTextForWord(item[travauxKey]),
+          Support: formatTextForWord(item[supportKey], { color: 'FF0000', italic: true }),
+          devoirs: formatTextForWord(item[devoirsKey], { color: '0000FF' })
+        }));
+
+        return { jourDateComplete: formattedDate, matieres: matieres };
+      }).filter(Boolean);
+
+      const templateData = {
+        semaine: weekNumber,
+        classe: classe,
+        jours: joursData,
+        notes: formatTextForWord(notes),
+        plageSemaine: plageSemaineText
+      };
+
+      doc.render(templateData);
+    }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buf);
 
@@ -639,5 +666,4 @@ if (require.main === module) {
 }
 
 
-// --------------------- Génération IA Hebdomadaire (plans multiples) --------------------\n\napp.post("/api/generate-weekly-lesson-plans", async (req, res) => {\n  try {\n    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;\n    if (!GEMINI_API_KEY) {\n      return res.status(503).json({ message: "AI service is not initialized. Check the server's GEMINI API key." });\n    }\n\n    const lessonTemplateUrl = process.env.LESSON_TEMPLATE_URL;\n    if (!lessonTemplateUrl) {\n      return res.status(503).json({ message: "Lesson template Word URL is not configured." });\n    }\n\n    const { week, data } = req.body;\n    if (!data || !Array.isArray(data) || data.length === 0 || !week) {\n      return res.status(400).json({ message: "Les données ou la semaine sont manquantes." });\n    }\n\n    console.log(`Génération de ${data.length} plans de leçons pour la semaine ${week}`);\n\n    // Charger le modèle Word\n    let templateBuffer;\n    try {\n      const response = await fetch(lessonTemplateUrl);\n      if (!response.ok) throw new Error(`Failed to download Word template (${response.status})`);\n      templateBuffer = Buffer.from(await response.arrayBuffer());\n    } catch (e) {\n      console.error("Erreur de récupération du modèle Word:", e);\n      return res.status(500).json({ message: "Unable to fetch lesson template from provided URL." });\n    }\n\n    const archiver = require("archiver");\n    const archive = archiver("zip", { zlib: { level: 9 } });\n\n    res.setHeader("Content-Type", "application/zip");\n    res.setHeader("Content-Disposition", `attachment; filename="Plans_Lecons_Semaine_${week}.zip"`);\n\n    archive.pipe(res);\n\n    // Ajouter un fichier de test pour vérifier que le ZIP fonctionne\n    archive.append("Plans de leçons générés pour la semaine " + week, { name: "info.txt" });\n\n    await archive.finalize();\n    \n  } catch (error) {\n    console.error("❌ Server error./generate-weekly-lesson-plans:", error);\n    if (!res.headersSent) {\n      const errorMessage = error.message || "Erreur interne.";\n      res.status(500).json({ message: `Erreur interne lors de la génération hebdomadaire: ${errorMessage}` });\n    }\n  }\n});
 module.exports = app;
