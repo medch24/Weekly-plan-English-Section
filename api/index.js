@@ -137,7 +137,7 @@ app.post('/api/login', (req, res) => {
 
 app.get('/api/plans/:week', async (req, res) => {
   const weekNumber = parseInt(req.params.week, 10);
-  if (isNaN(weekNumber)) return res.status(400).json({ message: 'Semaine invalide.' });
+  if (isNaN(weekNumber)) return res.status(400).json({ message: 'Invalid week.' });
   try {
     const db = await connectToDatabase();
     const planDocument = await db.collection('plans').findOne({ week: weekNumber });
@@ -148,14 +148,14 @@ app.get('/api/plans/:week', async (req, res) => {
     }
   } catch (error) {
     console.error('Erreur MongoDB /plans/:week:', error);
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
 app.post('/api/save-plan', async (req, res) => {
   const weekNumber = parseInt(req.body.week, 10);
   const data = req.body.data;
-  if (isNaN(weekNumber) || !Array.isArray(data)) return res.status(400).json({ message: 'Données invalides.' });
+  if (isNaN(weekNumber) || !Array.isArray(data)) return res.status(400).json({ message: 'Invalid data.' });
   try {
     const db = await connectToDatabase();
     await db.collection('plans').updateOne(
@@ -166,14 +166,14 @@ app.post('/api/save-plan', async (req, res) => {
     res.status(200).json({ message: `Plan S${weekNumber} enregistré.` });
   } catch (error) {
     console.error('Erreur MongoDB /save-plan:', error);
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
 app.post('/api/save-notes', async (req, res) => {
   const weekNumber = parseInt(req.body.week, 10);
   const { classe, notes } = req.body;
-  if (isNaN(weekNumber) || !classe) return res.status(400).json({ message: 'Données invalides.' });
+  if (isNaN(weekNumber) || !classe) return res.status(400).json({ message: 'Invalid data.' });
   try {
     const db = await connectToDatabase();
     await db.collection('plans').updateOne(
@@ -184,14 +184,14 @@ app.post('/api/save-notes', async (req, res) => {
     res.status(200).json({ message: 'Notes enregistrées.' });
   } catch (error) {
     console.error('Erreur MongoDB /save-notes:', error);
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
 app.post('/api/save-row', async (req, res) => {
   const weekNumber = parseInt(req.body.week, 10);
   const rowData = req.body.data;
-  if (isNaN(weekNumber) || typeof rowData !== 'object') return res.status(400).json({ message: 'Données invalides.' });
+  if (isNaN(weekNumber) || typeof rowData !== 'object') return res.status(400).json({ message: 'Invalid data.' });
   try {
     const db = await connectToDatabase();
     const updateFields = {};
@@ -222,7 +222,7 @@ app.post('/api/save-row', async (req, res) => {
     }
   } catch (error) {
     console.error('Erreur MongoDB /save-row:', error);
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
@@ -233,7 +233,7 @@ app.get('/api/all-classes', async (req, res) => {
     res.status(200).json(classes.sort());
   } catch (error) {
     console.error('Erreur MongoDB /api/all-classes:', error);
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
@@ -244,17 +244,23 @@ app.post('/api/generate-word', async (req, res) => {
     const { week, classe, data, notes } = req.body;
     const weekNumber = Number(week);
     if (!Number.isInteger(weekNumber) || !classe || !Array.isArray(data)) {
-      return res.status(400).json({ message: 'Données invalides.' });
+      return res.status(400).json({ message: 'Invalid data.' });
+    }
+
+    if (!WORD_TEMPLATE_URL) {
+      console.error("WORD_TEMPLATE_URL is not configured");
+      return res.status(500).json({ message: 'Word template URL is not configured on server.' });
     }
 
     let templateBuffer;
     try {
+      console.log(`Fetching Word template from: ${WORD_TEMPLATE_URL}`);
       const response = await fetch(WORD_TEMPLATE_URL);
-      if (!response.ok) throw new Error(`Échec modèle Word (${response.status})`);
+      if (!response.ok) throw new Error(`Failed to fetch Word template (${response.status})`);
       templateBuffer = Buffer.from(await response.arrayBuffer());
     } catch (e) {
-      console.error("Erreur de récupération du modèle Word:", e);
-      return res.status(500).json({ message: `Erreur récup modèle Word.` });
+      console.error("Error fetching Word template:", e);
+      return res.status(500).json({ message: `Error fetching Word template: ${e.message}` });
     }
 
     const zip = new PizZip(templateBuffer);
@@ -335,7 +341,7 @@ app.post('/api/generate-word', async (req, res) => {
     res.send(buf);
 
   } catch (error) {
-    console.error('❌ Erreur serveur /generate-word:', error);
+    console.error('❌ Server error./generate-word:', error);
     if (!res.headersSent) {
       res.status(500).json({ message: 'Erreur interne /generate-word.' });
     }
@@ -347,11 +353,11 @@ app.post('/api/generate-word', async (req, res) => {
 app.post('/api/generate-excel-workbook', async (req, res) => {
   try {
     const weekNumber = Number(req.body.week);
-    if (!Number.isInteger(weekNumber)) return res.status(400).json({ message: 'Semaine invalide.' });
+    if (!Number.isInteger(weekNumber)) return res.status(400).json({ message: 'Invalid week.' });
 
     const db = await connectToDatabase();
     const planDocument = await db.collection('plans').findOne({ week: weekNumber });
-    if (!planDocument?.data?.length) return res.status(404).json({ message: `Aucune donnée pour S${weekNumber}.` });
+    if (!planDocument?.data?.length) return res.status(404).json({ message: `No data for S${weekNumber}.` });
 
     const finalHeaders = [ 'Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework' ];
     const formattedData = planDocument.data.map(item => {
@@ -377,7 +383,7 @@ app.post('/api/generate-excel-workbook', async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
   } catch (error) {
-    console.error('❌ Erreur serveur /generate-excel-workbook:', error);
+    console.error('❌ Server error./generate-excel-workbook:', error);
     if (!res.headersSent) res.status(500).json({ message: 'Erreur interne Excel.' });
   }
 });
@@ -387,11 +393,11 @@ app.post('/api/generate-excel-workbook', async (req, res) => {
 app.post('/api/full-report-by-class', async (req, res) => {
   try {
     const { classe: requestedClass } = req.body;
-    if (!requestedClass) return res.status(400).json({ message: 'Classe requise.' });
+    if (!requestedClass) return res.status(400).json({ message: 'Class required.' });
 
     const db = await connectToDatabase();
     const allPlans = await db.collection('plans').find({}).sort({ week: 1 }).toArray();
-    if (!allPlans || allPlans.length === 0) return res.status(404).json({ message: 'Aucune donnée.' });
+    if (!allPlans || allPlans.length === 0) return res.status(404).json({ message: 'No data.' });
 
     const dataBySubject = {};
     const monthsEnglish = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -428,7 +434,7 @@ app.post('/api/full-report-by-class', async (req, res) => {
     });
 
     const subjectsFound = Object.keys(dataBySubject);
-    if (subjectsFound.length === 0) return res.status(404).json({ message: `Aucune donnée pour la classe '${requestedClass}'.` });
+    if (subjectsFound.length === 0) return res.status(404).json({ message: `No data for la classe '${requestedClass}'.` });
 
     const workbook = XLSX.utils.book_new();
     const headers = ['Month', 'Week', 'Period', 'Lesson', 'Classwork', 'Material', 'Homework'];
@@ -448,7 +454,7 @@ app.post('/api/full-report-by-class', async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
   } catch (error) {
-    console.error('❌ Erreur serveur /full-report-by-class:', error);
+    console.error('❌ Server error./full-report-by-class:', error);
     if (!res.headersSent) res.status(500).json({ message: 'Erreur interne du rapport.' });
   }
 });
@@ -459,28 +465,28 @@ app.post('/api/generate-ai-lesson-plan', async (req, res) => {
   try {
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
     if (!GEMINI_API_KEY) {
-      return res.status(503).json({ message: "Le service IA n'est pas initialisé. Vérifiez la clé API GEMINI du serveur." });
+      return res.status(503).json({ message: "AI service is not initialized. Check the server's GEMINI API key." });
     }
 
     const lessonTemplateUrl = process.env.LESSON_TEMPLATE_URL;
     if (!lessonTemplateUrl) {
-      return res.status(503).json({ message: "L'URL du modèle de leçon Word n'est pas configurée." });
+      return res.status(503).json({ message: "Lesson template Word URL is not configured." });
     }
 
     const { week, rowData } = req.body;
     if (!rowData || typeof rowData !== 'object' || !week) {
-      return res.status(400).json({ message: "Les données de la ligne ou de la semaine sont manquantes." });
+      return res.status(400).json({ message: "Row data or week is missing." });
     }
 
     // Charger le modèle Word
     let templateBuffer;
     try {
       const response = await fetch(lessonTemplateUrl);
-      if (!response.ok) throw new Error(`Échec du téléchargement du modèle Word (${response.status})`);
+      if (!response.ok) throw new Error(`Failed to download Word template (${response.status})`);
       templateBuffer = Buffer.from(await response.arrayBuffer());
     } catch (e) {
       console.error("Erreur de récupération du modèle Word:", e);
-      return res.status(500).json({ message: "Impossible de récupérer le modèle de leçon depuis l'URL fournie." });
+      return res.status(500).json({ message: "Unable to fetch lesson template from provided URL." });
     }
 
     // Extraire données
@@ -563,7 +569,7 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
       aiData = JSON.parse(text);
     } catch (e) {
       console.error("Erreur de parsing JSON de la réponse de l'IA:", text);
-      return res.status(500).json({ message: "L'IA a retourné une réponse mal formée." });
+      return res.status(500).json({ message: "AI returned a malformed response." });
     }
 
     // Préparer le DOCX
@@ -609,10 +615,10 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
     res.send(buf);
 
   } catch (error) {
-    console.error('❌ Erreur serveur /generate-ai-lesson-plan:', error);
+    console.error('❌ Server error./generate-ai-lesson-plan:', error);
     if (!res.headersSent) {
       const errorMessage = error.message || "Erreur interne.";
-      res.status(500).json({ message: `Erreur interne lors de la génération IA: ${errorMessage}` });
+      res.status(500).json({ message: `Internal error during AI generation: ${errorMessage}` });
     }
   }
 });
@@ -627,5 +633,5 @@ if (require.main === module) {
 }
 
 
-// --------------------- Génération IA Hebdomadaire (plans multiples) --------------------\n\napp.post("/api/generate-weekly-lesson-plans", async (req, res) => {\n  try {\n    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;\n    if (!GEMINI_API_KEY) {\n      return res.status(503).json({ message: "Le service IA n'est pas initialisé. Vérifiez la clé API GEMINI du serveur." });\n    }\n\n    const lessonTemplateUrl = process.env.LESSON_TEMPLATE_URL;\n    if (!lessonTemplateUrl) {\n      return res.status(503).json({ message: "L'URL du modèle de leçon Word n'est pas configurée." });\n    }\n\n    const { week, data } = req.body;\n    if (!data || !Array.isArray(data) || data.length === 0 || !week) {\n      return res.status(400).json({ message: "Les données ou la semaine sont manquantes." });\n    }\n\n    console.log(`Génération de ${data.length} plans de leçons pour la semaine ${week}`);\n\n    // Charger le modèle Word\n    let templateBuffer;\n    try {\n      const response = await fetch(lessonTemplateUrl);\n      if (!response.ok) throw new Error(`Échec du téléchargement du modèle Word (${response.status})`);\n      templateBuffer = Buffer.from(await response.arrayBuffer());\n    } catch (e) {\n      console.error("Erreur de récupération du modèle Word:", e);\n      return res.status(500).json({ message: "Impossible de récupérer le modèle de leçon depuis l'URL fournie." });\n    }\n\n    const archiver = require("archiver");\n    const archive = archiver("zip", { zlib: { level: 9 } });\n\n    res.setHeader("Content-Type", "application/zip");\n    res.setHeader("Content-Disposition", `attachment; filename="Plans_Lecons_Semaine_${week}.zip"`);\n\n    archive.pipe(res);\n\n    // Ajouter un fichier de test pour vérifier que le ZIP fonctionne\n    archive.append("Plans de leçons générés pour la semaine " + week, { name: "info.txt" });\n\n    await archive.finalize();\n    \n  } catch (error) {\n    console.error("❌ Erreur serveur /generate-weekly-lesson-plans:", error);\n    if (!res.headersSent) {\n      const errorMessage = error.message || "Erreur interne.";\n      res.status(500).json({ message: `Erreur interne lors de la génération hebdomadaire: ${errorMessage}` });\n    }\n  }\n});
+// --------------------- Génération IA Hebdomadaire (plans multiples) --------------------\n\napp.post("/api/generate-weekly-lesson-plans", async (req, res) => {\n  try {\n    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;\n    if (!GEMINI_API_KEY) {\n      return res.status(503).json({ message: "AI service is not initialized. Check the server's GEMINI API key." });\n    }\n\n    const lessonTemplateUrl = process.env.LESSON_TEMPLATE_URL;\n    if (!lessonTemplateUrl) {\n      return res.status(503).json({ message: "Lesson template Word URL is not configured." });\n    }\n\n    const { week, data } = req.body;\n    if (!data || !Array.isArray(data) || data.length === 0 || !week) {\n      return res.status(400).json({ message: "Les données ou la semaine sont manquantes." });\n    }\n\n    console.log(`Génération de ${data.length} plans de leçons pour la semaine ${week}`);\n\n    // Charger le modèle Word\n    let templateBuffer;\n    try {\n      const response = await fetch(lessonTemplateUrl);\n      if (!response.ok) throw new Error(`Failed to download Word template (${response.status})`);\n      templateBuffer = Buffer.from(await response.arrayBuffer());\n    } catch (e) {\n      console.error("Erreur de récupération du modèle Word:", e);\n      return res.status(500).json({ message: "Unable to fetch lesson template from provided URL." });\n    }\n\n    const archiver = require("archiver");\n    const archive = archiver("zip", { zlib: { level: 9 } });\n\n    res.setHeader("Content-Type", "application/zip");\n    res.setHeader("Content-Disposition", `attachment; filename="Plans_Lecons_Semaine_${week}.zip"`);\n\n    archive.pipe(res);\n\n    // Ajouter un fichier de test pour vérifier que le ZIP fonctionne\n    archive.append("Plans de leçons générés pour la semaine " + week, { name: "info.txt" });\n\n    await archive.finalize();\n    \n  } catch (error) {\n    console.error("❌ Server error./generate-weekly-lesson-plans:", error);\n    if (!res.headersSent) {\n      const errorMessage = error.message || "Erreur interne.";\n      res.status(500).json({ message: `Erreur interne lors de la génération hebdomadaire: ${errorMessage}` });\n    }\n  }\n});
 module.exports = app;
