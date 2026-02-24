@@ -41,7 +41,7 @@ const formatTextForWord = (text, options = {}) => {
   if (containsArabic(text)) {
     paragraphProperties = '<w:pPr><w:jc w:val="right"/><w:bidi w:val="1"/><w:textDirection w:val="rl"/></w:pPr>';
     runPropertiesParts.push('<w:rtl w:val="1"/>');
-    runPropertiesParts.push('<w:cs/>'); // Complex script pour l'arabe
+    runPropertiesParts.push('<w:cs/>');
     runPropertiesParts.push('<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Arabic Typesetting"/>');
   }
 
@@ -65,10 +65,14 @@ app.use(express.static(path.join(__dirname, '../public')));
 const MONGO_URL = process.env.MONGO_URL;
 const WORD_TEMPLATE_URL = process.env.WORD_TEMPLATE_URL;
 const LESSON_TEMPLATE_URL = process.env.LESSON_TEMPLATE_URL;
-const WORD_TEMPLATE2_URL = process.env.WORD_TEMPLATE2_URL; // For other classes (PEI1-5, DP1-2)
+const WORD_TEMPLATE2_URL = process.env.WORD_TEMPLATE2_URL;
 
 const arabicTeachers = ['Majed', 'Jaber', 'Imad', 'Saeed'];
 const englishTeachers = ['Tamer', 'Mohamed Ali', 'Sami', 'Tonga', 'Francis', 'Muhammed Ali', 'Khidr', 'Hamed', 'Kamel', 'Abdulrahman', 'Wassim', 'Anwar'];
+
+// Excel columns (exact names from the uploaded file):
+// Teacher, Day, Period, Class, Subject, Lesson, Classwork, Material, Homework
+const EXCEL_COLUMNS = ['Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework'];
 
 const specificWeekDateRangesNode = {
   1:{start:'2025-08-31',end:'2025-09-04'}, 2:{start:'2025-09-07',end:'2025-09-11'}, 3:{start:'2025-09-14',end:'2025-09-18'}, 4:{start:'2025-09-21',end:'2025-09-25'}, 5:{start:'2025-09-28',end:'2025-10-02'}, 6:{start:'2025-10-05',end:'2025-10-09'}, 7:{start:'2025-10-12',end:'2025-10-16'}, 8:{start:'2025-10-19',end:'2025-10-23'}, 9:{start:'2025-10-26',end:'2025-10-30'},10:{start:'2025-11-02',end:'2025-11-06'},
@@ -105,8 +109,10 @@ function formatDateEnglishNode(date) {
   const yearNum = date.getUTCFullYear();
   return `${dayName}, ${monthName} ${dayNum}, ${yearNum}`;
 }
+
 function getDateForDayNameNode(weekStartDate, dayName) {
   if (!weekStartDate || isNaN(weekStartDate.getTime())) return null;
+  // Day names are in English (from Excel: Sunday, Monday, Tuesday, Wednesday, Thursday)
   const dayOrder = { "Sunday": 0, "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4 };
   const offset = dayOrder[dayName];
   if (offset === undefined) return null;
@@ -118,6 +124,8 @@ function getDateForDayNameNode(weekStartDate, dayName) {
   specificDate.setUTCDate(specificDate.getUTCDate() + offset);
   return specificDate;
 }
+
+// Case-insensitive key finder for an object
 const findKey = (obj, target) => obj ? Object.keys(obj).find(k => k.trim().toLowerCase() === target.toLowerCase()) : undefined;
 
 // ------------------------- Auth & CRUD simples -------------------------
@@ -202,19 +210,43 @@ app.post('/api/save-row', async (req, res) => {
     }
     updateFields['data.$[elem].updatedAt'] = now;
 
+    // Support both English (from Excel) and legacy French column names
+    const teacherKey = findKey(rowData, 'Teacher') || findKey(rowData, 'Enseignant');
+    const classKey = findKey(rowData, 'Class') || findKey(rowData, 'Classe');
+    const dayKey = findKey(rowData, 'Day') || findKey(rowData, 'Jour');
+    const periodKey = findKey(rowData, 'Period') || findKey(rowData, 'Période');
+    const subjectKey = findKey(rowData, 'Subject') || findKey(rowData, 'Matière');
+
     const arrayFilters = [{
-      "elem.Enseignant": rowData[findKey(rowData, 'Enseignant')],
-      "elem.Classe": rowData[findKey(rowData, 'Classe')],
-      "elem.Jour": rowData[findKey(rowData, 'Jour')],
-      "elem.Période": rowData[findKey(rowData, 'Période')],
-      "elem.Matière": rowData[findKey(rowData, 'Matière')]
+      "elem.Teacher": rowData[teacherKey],
+      "elem.Class": rowData[classKey],
+      "elem.Day": rowData[dayKey],
+      "elem.Period": rowData[periodKey],
+      "elem.Subject": rowData[subjectKey]
     }];
 
-    const result = await db.collection('plans').updateOne(
+    // Try with English keys first, fallback to French keys
+    let result = await db.collection('plans').updateOne(
       { week: weekNumber },
       { $set: updateFields },
       { arrayFilters: arrayFilters }
     );
+
+    if (result.modifiedCount === 0 && result.matchedCount > 0) {
+      // Try with legacy French keys
+      const arrayFiltersFr = [{
+        "elem.Enseignant": rowData[teacherKey],
+        "elem.Classe": rowData[classKey],
+        "elem.Jour": rowData[dayKey],
+        "elem.Période": rowData[periodKey],
+        "elem.Matière": rowData[subjectKey]
+      }];
+      result = await db.collection('plans').updateOne(
+        { week: weekNumber },
+        { $set: updateFields },
+        { arrayFilters: arrayFiltersFr }
+      );
+    }
 
     if (result.modifiedCount > 0 || result.matchedCount > 0) {
       res.status(200).json({ message: 'Ligne enregistrée.', updatedData: { updatedAt: now } });
@@ -227,11 +259,22 @@ app.post('/api/save-row', async (req, res) => {
   }
 });
 
+// FIX: /api/all-classes — fix the $ne syntax (can't use two $ne in same field shorthand)
 app.get('/api/all-classes', async (req, res) => {
   try {
     const db = await connectToDatabase();
-    const classes = await db.collection('plans').distinct('data.Classe', { 'data.Classe': { $ne: null, $ne: "" } });
-    res.status(200).json(classes.sort());
+    // Try English 'Class' column first, fallback to French 'Classe'
+    let classes = await db.collection('plans').distinct('data.Class', {
+      'data.Class': { $exists: true, $ne: null, $nin: ["", null] }
+    });
+    if (!classes || classes.length === 0) {
+      classes = await db.collection('plans').distinct('data.Classe', {
+        'data.Classe': { $exists: true, $ne: null, $nin: ["", null] }
+      });
+    }
+    // Filter out empty/null values
+    const filteredClasses = (classes || []).filter(c => c && String(c).trim() !== '');
+    res.status(200).json(filteredClasses.sort());
   } catch (error) {
     console.error('Erreur MongoDB /api/all-classes:', error);
     res.status(500).json({ message: 'Server error.' });
@@ -287,6 +330,7 @@ app.post('/api/generate-word', async (req, res) => {
     }
 
     const sampleRow = data[0] || {};
+    // Support both English (Excel) and French legacy column names
     const jourKey = findKey(sampleRow, 'Day') || findKey(sampleRow, 'Jour');
     const periodeKey = findKey(sampleRow, 'Period') || findKey(sampleRow, 'Période');
     const matiereKey = findKey(sampleRow, 'Subject') || findKey(sampleRow, 'Matière');
@@ -370,6 +414,11 @@ app.post('/api/generate-word', async (req, res) => {
 
       doc.render(templateData);
     }
+
+    // FIX: was using undefined `buf` variable — correctly get buffer from doc
+    const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const filename = `plan_s${weekNumber}_${classe.replace(/[^a-z0-9]/gi, '_')}.docx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buf);
 
@@ -392,7 +441,8 @@ app.post('/api/generate-excel-workbook', async (req, res) => {
     const planDocument = await db.collection('plans').findOne({ week: weekNumber });
     if (!planDocument?.data?.length) return res.status(404).json({ message: `No data for S${weekNumber}.` });
 
-    const finalHeaders = [ 'Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework' ];
+    // Use standard Excel column names (English)
+    const finalHeaders = ['Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework'];
     const formattedData = planDocument.data.map(item => {
       const row = {};
       finalHeaders.forEach(header => {
@@ -447,19 +497,21 @@ app.post('/api/full-report-by-class', async (req, res) => {
       }
 
       (plan.data || []).forEach(item => {
-        const itemClassKey = findKey(item, 'classe');
-        const itemSubjectKey = findKey(item, 'matière');
+        // Support English column names (Excel) and French legacy
+        const itemClassKey = findKey(item, 'Class') || findKey(item, 'Classe');
+        const itemSubjectKey = findKey(item, 'Subject') || findKey(item, 'Matière');
         if (itemClassKey && item[itemClassKey] === requestedClass && itemSubjectKey && item[itemSubjectKey]) {
           const subject = item[itemSubjectKey];
           if (!dataBySubject[subject]) dataBySubject[subject] = [];
           const row = {
             'Month': monthName,
             'Week': weekNumber,
-            'Period': item[findKey(item, 'period')] || item[findKey(item, 'période')] || '',
-            'Lesson': item[findKey(item, 'lesson')] || item[findKey(item, 'leçon')] || '',
-            'Classwork': item[findKey(item, 'classwork')] || item[findKey(item, 'travaux de classe')] || '',
-            'Material': item[findKey(item, 'material')] || item[findKey(item, 'support')] || '',
-            'Homework': item[findKey(item, 'homework')] || item[findKey(item, 'devoirs')] || ''
+            'Day': item[findKey(item, 'Day') || findKey(item, 'Jour')] || '',
+            'Period': item[findKey(item, 'Period') || findKey(item, 'Période')] || '',
+            'Lesson': item[findKey(item, 'Lesson') || findKey(item, 'Leçon')] || '',
+            'Classwork': item[findKey(item, 'Classwork') || findKey(item, 'Travaux de classe')] || '',
+            'Material': item[findKey(item, 'Material') || findKey(item, 'Support')] || '',
+            'Homework': item[findKey(item, 'Homework') || findKey(item, 'Devoirs')] || ''
           };
           dataBySubject[subject].push(row);
         }
@@ -467,16 +519,16 @@ app.post('/api/full-report-by-class', async (req, res) => {
     });
 
     const subjectsFound = Object.keys(dataBySubject);
-    if (subjectsFound.length === 0) return res.status(404).json({ message: `No data for la classe '${requestedClass}'.` });
+    if (subjectsFound.length === 0) return res.status(404).json({ message: `No data for class '${requestedClass}'.` });
 
     const workbook = XLSX.utils.book_new();
-    const headers = ['Month', 'Week', 'Period', 'Lesson', 'Classwork', 'Material', 'Homework'];
+    const headers = ['Month', 'Week', 'Day', 'Period', 'Lesson', 'Classwork', 'Material', 'Homework'];
 
     subjectsFound.sort().forEach(subject => {
       const safeSheetName = subject.substring(0, 30).replace(/[*?:/\\\[\]]/g, '_');
       const worksheet = XLSX.utils.json_to_sheet(dataBySubject[subject], { header: headers });
       worksheet['!cols'] = [
-        { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 40 }, { wch: 25 }, { wch: 40 }
+        { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 40 }, { wch: 40 }, { wch: 25 }, { wch: 40 }
       ];
       XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName);
     });
@@ -511,7 +563,7 @@ app.post('/api/generate-ai-lesson-plan', async (req, res) => {
       return res.status(400).json({ message: "Row data or week is missing." });
     }
 
-    // Charger le modèle Word
+    // Load Word template
     let templateBuffer;
     try {
       const response = await fetch(lessonTemplateUrl);
@@ -522,18 +574,18 @@ app.post('/api/generate-ai-lesson-plan', async (req, res) => {
       return res.status(500).json({ message: "Unable to fetch lesson template from provided URL." });
     }
 
-    // Extraire données
-    const enseignant = rowData[findKey(rowData, 'Enseignant')] || '';
-    const classe = rowData[findKey(rowData, 'Classe')] || '';
-    const matiere = rowData[findKey(rowData, 'Matière')] || '';
-    const lecon = rowData[findKey(rowData, 'Leçon')] || '';
-    const jour = rowData[findKey(rowData, 'Jour')] || '';
-    const seance = rowData[findKey(rowData, 'Période')] || '';
-    const support = rowData[findKey(rowData, 'Support')] || 'Non spécifié';
-    const travaux = rowData[findKey(rowData, 'Travaux de classe')] || 'Non spécifié';
-    const devoirsPrevus = rowData[findKey(rowData, 'Devoirs')] || 'Non spécifié';
+    // Extract data — support English (Excel) and French legacy column names
+    const enseignant = rowData[findKey(rowData, 'Teacher') || findKey(rowData, 'Enseignant')] || '';
+    const classe = rowData[findKey(rowData, 'Class') || findKey(rowData, 'Classe')] || '';
+    const matiere = rowData[findKey(rowData, 'Subject') || findKey(rowData, 'Matière')] || '';
+    const lecon = rowData[findKey(rowData, 'Lesson') || findKey(rowData, 'Leçon')] || '';
+    const jour = rowData[findKey(rowData, 'Day') || findKey(rowData, 'Jour')] || '';
+    const seance = rowData[findKey(rowData, 'Period') || findKey(rowData, 'Période')] || '';
+    const support = rowData[findKey(rowData, 'Material') || findKey(rowData, 'Support')] || 'Not specified';
+    const travaux = rowData[findKey(rowData, 'Classwork') || findKey(rowData, 'Travaux de classe')] || 'Not specified';
+    const devoirsPrevus = rowData[findKey(rowData, 'Homework') || findKey(rowData, 'Devoirs')] || 'Not specified';
 
-    // Date formatée
+    // Format date
     let formattedDate = "";
     const weekNumber = Number(week);
     const datesNode = specificWeekDateRangesNode[weekNumber];
@@ -545,18 +597,11 @@ app.post('/api/generate-ai-lesson-plan', async (req, res) => {
       }
     }
 
-    // Prompt + structure JSON
-    const jsonStructure = `{"TitreUnite":"un titre d'unité pertinent pour la leçon","Methodes":"liste des méthodes d'enseignement","Outils":"liste des outils de travail","Objectifs":"une liste concise des objectifs d'apprentissage (compétences, connaissances), séparés par des sauts de ligne (\\\\n). Commence chaque objectif par un tiret (-).","etapes":[{"phase":"Introduction","duree":"5 min","activite":"Description de l'activité d'introduction pour l'enseignant et les élèves."},{"phase":"Activité Principale","duree":"25 min","activite":"Description de l'activité principale, en intégrant les 'travaux de classe' et le 'support' si possible."},{"phase":"Synthèse","duree":"10 min","activite":"Description de l'activité de conclusion et de vérification des acquis."},{"phase":"Clôture","duree":"5 min","activite":"Résumé rapide et annonce des devoirs."}],"Ressources":"les ressources spécifiques à utiliser.","Devoirs":"une suggestion de devoirs.","DiffLents":"une suggestion pour aider les apprenants en difficulté.","DiffTresPerf":"une suggestion pour stimuler les apprenants très performants.","DiffTous":"une suggestion de différenciation pour toute la classe."}`;
+    // Prompt + JSON structure
+    const jsonStructure = `{"TitreUnite":"a relevant unit title for the lesson","Methodes":"list of teaching methods","Outils":"list of working tools","Objectifs":"a concise list of learning objectives (skills, knowledge), separated by line breaks (\\\\n). Begin each objective with a dash (-).","etapes":[{"phase":"Introduction","duree":"5 min","activite":"Description of the introduction activity for teacher and students."},{"phase":"Main Activity","duree":"25 min","activite":"Description of the main activity, integrating 'classwork' and 'material' if possible."},{"phase":"Synthesis","duree":"10 min","activite":"Description of the conclusion and review activity."},{"phase":"Closure","duree":"5 min","activite":"Quick summary and homework announcement."}],"Ressources":"specific resources to use.","Devoirs":"a homework suggestion.","DiffLents":"a suggestion to help struggling learners.","DiffTresPerf":"a suggestion to challenge high-performing learners.","DiffTous":"a differentiation suggestion for the whole class."}`;
 
     let prompt;
-    if (englishTeachers.includes(enseignant)) {
-      prompt = `As an expert pedagogical assistant, create a detailed 45-minute lesson plan in English. Structure the lesson into timed phases. Intelligently integrate the teacher's existing notes:
-- Subject: ${matiere}, Class: ${classe}, Lesson Topic: ${lecon}
-- Planned Classwork: ${travaux}
-- Mentioned Support/Materials: ${support}
-- Planned Homework: ${devoirsPrevus}
-Generate a response in valid JSON format only. Use the following JSON structure with professional and concrete values in English: ${jsonStructure}`;
-    } else if (arabicTeachers.includes(enseignant)) {
+    if (arabicTeachers.includes(enseignant)) {
       prompt = `بصفتك مساعدًا تربويًا خبيرًا، قم بإنشاء خطة درس مفصلة باللغة العربية مدتها 45 دقيقة. قم ببناء الدرس في مراحل محددة بوقت. ادمج بذكاء ملاحظات المعلم الحالية:
 - المادة: ${matiere}, الفصل: ${classe}, موضوع الدرس: ${lecon}
 - عمل الفصل المخطط له: ${travaux}
@@ -564,15 +609,15 @@ Generate a response in valid JSON format only. Use the following JSON structure 
 - الواجبات المخطط لها: ${devoirsPrevus}
 قم بإنشاء استجابة بتنسيق JSON صالح فقط. يجب استعمال البنية التالية بقيم مهنية وملموسة (المفاتيح بالإنجليزية): ${jsonStructure}`;
     } else {
-      prompt = `En tant qu'assistant pédagogique expert, crée un plan de leçon détaillé de 45 minutes en français. Structure la leçon en phases chronométrées. Intègre intelligemment les notes existantes de l'enseignant :
-- Matière: ${matiere}, Classe: ${classe}, Thème de la leçon: ${lecon}
-- Travaux de classe prévus : ${travaux}
-- Support/Matériel mentionné : ${support}
-- Devoirs prévus : ${devoirsPrevus}
-Génère une réponse au format JSON valide uniquement selon la structure suivante (valeurs concrètes et professionnelles en français) : ${jsonStructure}`;
+      // English for all English teachers (and default)
+      prompt = `As an expert pedagogical assistant, create a detailed 45-minute lesson plan in English. Structure the lesson into timed phases. Intelligently integrate the teacher's existing notes:
+- Subject: ${matiere}, Class: ${classe}, Lesson Topic: ${lecon}
+- Planned Classwork: ${travaux}
+- Mentioned Support/Materials: ${support}
+- Planned Homework: ${devoirsPrevus}
+Generate a response in valid JSON format only. Use the following JSON structure with professional and concrete values in English: ${jsonStructure}`;
     }
 
-    // === CORRECTION : modèle & endpoint ===
     const MODEL_NAME = "gemini-2.5-flash";
     const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -592,7 +637,7 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
     if (!aiResponse.ok) {
       const errorBody = await aiResponse.json().catch(() => ({}));
       console.error("Erreur de l'API Google AI:", JSON.stringify(errorBody, null, 2));
-      throw new Error(`[${aiResponse.status} ${aiResponse.statusText}] ${errorBody.error?.message || 'Erreur inconnue de l\'API.'}`);
+      throw new Error(`[${aiResponse.status} ${aiResponse.statusText}] ${errorBody.error?.message || 'Unknown API error.'}`);
     }
 
     const aiResult = await aiResponse.json();
@@ -605,9 +650,9 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
       return res.status(500).json({ message: "AI returned a malformed response." });
     }
 
-    // Préparer le DOCX
+    // Prepare DOCX
     const zip = new PizZip(templateBuffer);
-    const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => "" });
+    const docAI = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => "" });
 
     let minutageString = "";
     let contenuString = "";
@@ -630,8 +675,8 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
       Contenu: contenuString,
     };
 
-    doc.render(templateData);
-    const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+    docAI.render(templateData);
+    const buf = docAI.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
 
     const sanitizeForFilename = (str) => {
       if (typeof str !== 'string') str = String(str);
@@ -642,7 +687,7 @@ Génère une réponse au format JSON valide uniquement selon la structure suivan
         .replace(/__+/g, '_');
     };
 
-    const filename = `Plan de lecon-${sanitizeForFilename(matiere)}-${sanitizeForFilename(seance)}-${sanitizeForFilename(classe)}-Semaine${weekNumber}.docx`;
+    const filename = `LessonPlan-${sanitizeForFilename(matiere)}-P${sanitizeForFilename(String(seance))}-${sanitizeForFilename(classe)}-Week${weekNumber}.docx`;
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buf);
@@ -664,6 +709,5 @@ if (require.main === module) {
     console.log(`📝 Application accessible à l'adresse : http://localhost:${PORT}`);
   });
 }
-
 
 module.exports = app;
