@@ -1,7 +1,13 @@
-// api/index.js — Version REST (fetch) corrigée
+// api/index.js — English Section Version
+
+// Protection against multiple module loads
+if (global.appInstance) {
+  console.log('⚠️ Module api/index.js already loaded, reusing existing instance');
+  module.exports = global.appInstance;
+  return;
+}
 
 const express = require('express');
-const path = require('path');
 const cors = require('cors');
 const fileUpload = require('express-fileupload');
 const XLSX = require('xlsx');
@@ -9,9 +15,12 @@ const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
 const fetch = require('node-fetch');
 const { MongoClient } = require('mongodb');
+const archiver = require('archiver');
+const webpush = require('web-push');
+const path = require('path');
 
 // ========================================================================
-// ========= FONCTION D'AIDE POUR LA GÉNÉRATION WORD (VERSION FINALE) =====
+// ====================== HELPERS FOR WORD GENERATION =====================
 // ========================================================================
 
 const xmlEscape = (str) => {
@@ -31,6 +40,8 @@ const formatTextForWord = (text, options = {}) => {
   if (!text || typeof text !== 'string' || text.trim() === '') {
     return '<w:p/>';
   }
+
+  const cleanedText = text.trim();
   const { color, italic } = options;
   const runPropertiesParts = [];
   runPropertiesParts.push('<w:sz w:val="22"/><w:szCs w:val="22"/>');
@@ -38,7 +49,7 @@ const formatTextForWord = (text, options = {}) => {
   if (italic) runPropertiesParts.push('<w:i/><w:iCs w:val="true"/>');
 
   let paragraphProperties = '';
-  if (containsArabic(text)) {
+  if (containsArabic(cleanedText)) {
     paragraphProperties = '<w:pPr><w:jc w:val="right"/><w:bidi w:val="1"/><w:textDirection w:val="rl"/></w:pPr>';
     runPropertiesParts.push('<w:rtl w:val="1"/>');
     runPropertiesParts.push('<w:cs/>');
@@ -46,7 +57,7 @@ const formatTextForWord = (text, options = {}) => {
   }
 
   const runProperties = `<w:rPr>${runPropertiesParts.join('')}</w:rPr>`;
-  const lines = text.split(/\r\n|\n|\r/);
+  const lines = cleanedText.split(/\r\n|\n|\r/);
   const content = lines
     .map(line => `<w:t xml:space="preserve">${xmlEscape(line)}</w:t>`)
     .join('<w:br/>');
@@ -59,20 +70,32 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(fileUpload());
 
-// Servir les fichiers statiques depuis le dossier public
-app.use(express.static(path.join(__dirname, '../public')));
+const publicPath = path.join(__dirname, '..', 'public');
+app.use(express.static(publicPath));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(publicPath, 'index.html'));
+});
 
 const MONGO_URL = process.env.MONGO_URL;
 const WORD_TEMPLATE_URL = process.env.WORD_TEMPLATE_URL;
-const LESSON_TEMPLATE_URL = process.env.LESSON_TEMPLATE_URL;
 const WORD_TEMPLATE2_URL = process.env.WORD_TEMPLATE2_URL;
+const LESSON_TEMPLATE_URL = process.env.LESSON_TEMPLATE_URL;
+
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@weeklyplan.com';
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  console.log('✅ Web Push VAPID configured');
+}
 
 const arabicTeachers = ['Majed', 'Jaber', 'Imad', 'Saeed'];
 const englishTeachers = ['Tamer', 'Mohamed Ali', 'Sami', 'Tonga', 'Francis', 'Muhammed Ali', 'Khidr', 'Hamed', 'Kamel', 'Abdulrahman', 'Wassim', 'Anwar'];
-
-// Excel columns (exact names from the uploaded file):
-// Teacher, Day, Period, Class, Subject, Lesson, Classwork, Material, Homework
-const EXCEL_COLUMNS = ['Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework'];
 
 const specificWeekDateRangesNode = {
   1:{start:'2025-08-31',end:'2025-09-04'}, 2:{start:'2025-09-07',end:'2025-09-11'}, 3:{start:'2025-09-14',end:'2025-09-18'}, 4:{start:'2025-09-21',end:'2025-09-25'}, 5:{start:'2025-09-28',end:'2025-10-02'}, 6:{start:'2025-10-05',end:'2025-10-09'}, 7:{start:'2025-10-12',end:'2025-10-16'}, 8:{start:'2025-10-19',end:'2025-10-23'}, 9:{start:'2025-10-26',end:'2025-10-30'},10:{start:'2025-11-02',end:'2025-11-06'},
@@ -103,45 +126,74 @@ function formatDateEnglishNode(date) {
   if (!date || isNaN(date.getTime())) return "Invalid date";
   const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  const dayName = days[date.getUTCDay()];
-  const dayNum = String(date.getUTCDate()).padStart(2, '0');
-  const monthName = months[date.getUTCMonth()];
-  const yearNum = date.getUTCFullYear();
-  return `${dayName}, ${monthName} ${dayNum}, ${yearNum}`;
+  return `${days[date.getUTCDay()]}, ${months[date.getUTCMonth()]} ${String(date.getUTCDate()).padStart(2, '0')}, ${date.getUTCFullYear()}`;
+}
+
+function extractDayNameFromString(dayString) {
+  if (!dayString || typeof dayString !== 'string') return null;
+  const trimmed = dayString.trim();
+  const dayNamesEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"];
+  const dayNamesFr = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi"];
+  if (dayNamesEn.includes(trimmed)) return trimmed;
+  if (dayNamesFr.includes(trimmed)) return dayNamesEn[dayNamesFr.indexOf(trimmed)];
+  for (let i = 0; i < dayNamesEn.length; i++) {
+    if (trimmed.startsWith(dayNamesEn[i]) || trimmed.startsWith(dayNamesFr[i])) return dayNamesEn[i];
+  }
+  return null;
 }
 
 function getDateForDayNameNode(weekStartDate, dayName) {
   if (!weekStartDate || isNaN(weekStartDate.getTime())) return null;
-  // Day names are in English (from Excel: Sunday, Monday, Tuesday, Wednesday, Thursday)
-  const dayOrder = { "Sunday": 0, "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4 };
+  const dayOrder = { "Sunday": 0, "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4, "Dimanche": 0, "Lundi": 1, "Mardi": 2, "Mercredi": 3, "Jeudi": 4 };
   const offset = dayOrder[dayName];
   if (offset === undefined) return null;
-  const specificDate = new Date(Date.UTC(
-    weekStartDate.getUTCFullYear(),
-    weekStartDate.getUTCMonth(),
-    weekStartDate.getUTCDate()
-  ));
+  const specificDate = new Date(Date.UTC(weekStartDate.getUTCFullYear(), weekStartDate.getUTCMonth(), weekStartDate.getUTCDate()));
   specificDate.setUTCDate(specificDate.getUTCDate() + offset);
   return specificDate;
 }
 
-// Case-insensitive key finder for an object
-const findKey = (obj, target) => obj ? Object.keys(obj).find(k => k.trim().toLowerCase() === target.toLowerCase()) : undefined;
+const findKey = (obj, target) => {
+    if (!obj) return undefined;
+    const keys = Object.keys(obj);
+    const targetLower = target.toLowerCase();
+    const aliasMap = {
+        "teacher": ["teacher", "enseignant"],
+        "day": ["day", "jour"],
+        "period": ["period", "période", "periode"],
+        "class": ["class", "classe"],
+        "subject": ["subject", "matière", "matiere"],
+        "lesson": ["lesson", "leçon", "lecon"],
+        "classwork": ["classwork", "travaux de classe"],
+        "material": ["material", "support"],
+        "homework": ["homework", "devoirs"]
+    };
+    const aliases = aliasMap[targetLower] || [targetLower];
+    return keys.find(k => aliases.includes(k.trim().toLowerCase()));
+};
 
-// ------------------------- Auth & CRUD simples -------------------------
+const sanitizeForFilename = (str) => {
+  if (typeof str !== 'string') str = String(str);
+  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '_').replace(/__+/g, '_');
+};
+
+async function resolveGeminiModel(apiKey) {
+  try {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
+    if (!resp.ok) return "gemini-1.5-flash";
+    const json = await resp.json();
+    const models = json.models || [];
+    const preferredNames = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"];
+    for (const short of preferredNames) { if (models.some(m => m.name === `models/${short}`)) return short; }
+    return models[0]?.name.replace(/^models\//, "") || "gemini-1.5-flash";
+  } catch (e) { return "gemini-1.5-flash"; }
+}
+
+// ------------------------- API Routes -------------------------
 
 app.post('/api/login', (req, res) => {
-  try {
-    const { username, password } = req.body;
-    if (validUsers[username] && validUsers[username] === password) {
-      res.status(200).json({ success: true, username: username });
-    } else {
-      res.status(401).json({ success: false, message: 'Identifiants invalides' });
-    }
-  } catch (error) {
-    console.error('CRASH in /api/login:', error);
-    res.status(500).json({ success: false, message: 'Erreur interne du serveur.' });
-  }
+  const { username, password } = req.body;
+  if (validUsers[username] && validUsers[username] === password) res.status(200).json({ success: true, username });
+  else res.status(401).json({ success: false, message: 'Invalid credentials' });
 });
 
 app.get('/api/plans/:week', async (req, res) => {
@@ -150,51 +202,30 @@ app.get('/api/plans/:week', async (req, res) => {
   try {
     const db = await connectToDatabase();
     const planDocument = await db.collection('plans').findOne({ week: weekNumber });
+    const lessonPlans = await db.collection('lessonPlans').find({ week: weekNumber }, { projection: { _id: 1 } }).toArray();
+    const availableLessonPlanIds = new Set(lessonPlans.map(lp => lp._id));
+    const weeklyPlans = await db.collection('weeklyLessonPlans').find({ week: weekNumber }, { projection: { classe: 1 } }).toArray();
+    const availableWeeklyPlans = weeklyPlans.map(p => p.classe);
+
     if (planDocument) {
-      res.status(200).json({ planData: planDocument.data || [], classNotes: planDocument.classNotes || {} });
-    } else {
-      res.status(200).json({ planData: [], classNotes: {} });
-    }
-  } catch (error) {
-    console.error('Erreur MongoDB /plans/:week:', error);
-    res.status(500).json({ message: 'Server error.' });
-  }
+      const enrichedData = (planDocument.data || []).map(row => {
+        const potentialId = `${weekNumber}_${row[findKey(row, 'Teacher')]}_${row[findKey(row, 'Class')]}_${row[findKey(row, 'Subject')]}_${row[findKey(row, 'Period')]}_${row[findKey(row, 'Day')]}`.replace(/\s+/g, '_');
+        if (availableLessonPlanIds.has(potentialId)) return { ...row, lessonPlanId: potentialId };
+        return row;
+      });
+      res.status(200).json({ planData: enrichedData, classNotes: planDocument.classNotes || {}, availableWeeklyPlans });
+    } else res.status(200).json({ planData: [], classNotes: {}, availableWeeklyPlans: [] });
+  } catch (error) { res.status(500).json({ message: 'Server error.' }); }
 });
 
 app.post('/api/save-plan', async (req, res) => {
   const weekNumber = parseInt(req.body.week, 10);
-  const data = req.body.data;
-  if (isNaN(weekNumber) || !Array.isArray(data)) return res.status(400).json({ message: 'Invalid data.' });
+  if (isNaN(weekNumber) || !Array.isArray(req.body.data)) return res.status(400).json({ message: 'Invalid data.' });
   try {
     const db = await connectToDatabase();
-    await db.collection('plans').updateOne(
-      { week: weekNumber },
-      { $set: { data: data } },
-      { upsert: true }
-    );
-    res.status(200).json({ message: `Plan S${weekNumber} enregistré.` });
-  } catch (error) {
-    console.error('Erreur MongoDB /save-plan:', error);
-    res.status(500).json({ message: 'Server error.' });
-  }
-});
-
-app.post('/api/save-notes', async (req, res) => {
-  const weekNumber = parseInt(req.body.week, 10);
-  const { classe, notes } = req.body;
-  if (isNaN(weekNumber) || !classe) return res.status(400).json({ message: 'Invalid data.' });
-  try {
-    const db = await connectToDatabase();
-    await db.collection('plans').updateOne(
-      { week: weekNumber },
-      { $set: { [`classNotes.${classe}`]: notes } },
-      { upsert: true }
-    );
-    res.status(200).json({ message: 'Notes enregistrées.' });
-  } catch (error) {
-    console.error('Erreur MongoDB /save-notes:', error);
-    res.status(500).json({ message: 'Server error.' });
-  }
+    await db.collection('plans').updateOne({ week: weekNumber }, { $set: { data: req.body.data } }, { upsert: true });
+    res.status(200).json({ message: `Plan W${weekNumber} saved.` });
+  } catch (error) { res.status(500).json({ message: 'Server error.' }); }
 });
 
 app.post('/api/save-row', async (req, res) => {
@@ -203,511 +234,150 @@ app.post('/api/save-row', async (req, res) => {
   if (isNaN(weekNumber) || typeof rowData !== 'object') return res.status(400).json({ message: 'Invalid data.' });
   try {
     const db = await connectToDatabase();
-    const updateFields = {};
-    const now = new Date();
-    for (const key in rowData) {
-      updateFields[`data.$[elem].${key}`] = rowData[key];
-    }
-    updateFields['data.$[elem].updatedAt'] = now;
-
-    // Support both English (from Excel) and legacy French column names
-    const teacherKey = findKey(rowData, 'Teacher') || findKey(rowData, 'Enseignant');
-    const classKey = findKey(rowData, 'Class') || findKey(rowData, 'Classe');
-    const dayKey = findKey(rowData, 'Day') || findKey(rowData, 'Jour');
-    const periodKey = findKey(rowData, 'Period') || findKey(rowData, 'Période');
-    const subjectKey = findKey(rowData, 'Subject') || findKey(rowData, 'Matière');
-
-    const arrayFilters = [{
-      "elem.Teacher": rowData[teacherKey],
-      "elem.Class": rowData[classKey],
-      "elem.Day": rowData[dayKey],
-      "elem.Period": rowData[periodKey],
-      "elem.Subject": rowData[subjectKey]
-    }];
-
-    // Try with English keys first, fallback to French keys
-    let result = await db.collection('plans').updateOne(
-      { week: weekNumber },
-      { $set: updateFields },
-      { arrayFilters: arrayFilters }
-    );
-
-    if (result.modifiedCount === 0 && result.matchedCount > 0) {
-      // Try with legacy French keys
-      const arrayFiltersFr = [{
-        "elem.Enseignant": rowData[teacherKey],
-        "elem.Classe": rowData[classKey],
-        "elem.Jour": rowData[dayKey],
-        "elem.Période": rowData[periodKey],
-        "elem.Matière": rowData[subjectKey]
-      }];
-      result = await db.collection('plans').updateOne(
-        { week: weekNumber },
-        { $set: updateFields },
-        { arrayFilters: arrayFiltersFr }
-      );
-    }
-
-    if (result.modifiedCount > 0 || result.matchedCount > 0) {
-      res.status(200).json({ message: 'Ligne enregistrée.', updatedData: { updatedAt: now } });
-    } else {
-      res.status(404).json({ message: 'Ligne non trouvée.' });
-    }
-  } catch (error) {
-    console.error('Erreur MongoDB /save-row:', error);
-    res.status(500).json({ message: 'Server error.' });
-  }
+    const updateFields = { 'data.$[elem].updatedAt': new Date() };
+    for (const key in rowData) { if (key !== '_id' && key !== 'lessonPlanId') updateFields[`data.$[elem].${key}`] = rowData[key]; }
+    const filters = [{ "elem.Teacher": rowData[findKey(rowData, 'Teacher')], "elem.Class": rowData[findKey(rowData, 'Class')], "elem.Day": rowData[findKey(rowData, 'Day')], "elem.Period": rowData[findKey(rowData, 'Period')], "elem.Subject": rowData[findKey(rowData, 'Subject')] }];
+    await db.collection('plans').updateOne({ week: weekNumber }, { $set: updateFields }, { arrayFilters: filters });
+    res.status(200).json({ message: 'Row saved.' });
+  } catch (error) { res.status(500).json({ message: 'Server error.' }); }
 });
-
-// FIX: /api/all-classes — fix the $ne syntax (can't use two $ne in same field shorthand)
-app.get('/api/all-classes', async (req, res) => {
-  try {
-    const db = await connectToDatabase();
-    // Try English 'Class' column first, fallback to French 'Classe'
-    let classes = await db.collection('plans').distinct('data.Class', {
-      'data.Class': { $exists: true, $ne: null, $nin: ["", null] }
-    });
-    if (!classes || classes.length === 0) {
-      classes = await db.collection('plans').distinct('data.Classe', {
-        'data.Classe': { $exists: true, $ne: null, $nin: ["", null] }
-      });
-    }
-    // Filter out empty/null values
-    const filteredClasses = (classes || []).filter(c => c && String(c).trim() !== '');
-    res.status(200).json(filteredClasses.sort());
-  } catch (error) {
-    console.error('Erreur MongoDB /api/all-classes:', error);
-    res.status(500).json({ message: 'Server error.' });
-  }
-});
-
-// --------------------- Génération Word (plan hebdo) ---------------------
 
 app.post('/api/generate-word', async (req, res) => {
   try {
     const { week, classe, data, notes } = req.body;
     const weekNumber = Number(week);
-    if (!Number.isInteger(weekNumber) || !classe || !Array.isArray(data)) {
-      return res.status(400).json({ message: 'Invalid data.' });
-    }
-
-    // Determine which template to use based on class
-    const isG7orG8 = (classe === 'G7' || classe === 'G8');
-    const templateUrl = isG7orG8 ? WORD_TEMPLATE_URL : WORD_TEMPLATE2_URL;
-    const templateName = isG7orG8 ? 'WORD_TEMPLATE_URL (G7/G8)' : 'WORD_TEMPLATE2_URL (Other classes)';
-
-    if (!templateUrl) {
-      console.error(`${templateName} is not configured`);
-      return res.status(500).json({ message: `Word template URL is not configured on server for ${classe}.` });
-    }
-
-    let templateBuffer;
-    try {
-      console.log(`Fetching Word template for ${classe} from ${templateName}: ${templateUrl}`);
-      const response = await fetch(templateUrl);
-      if (!response.ok) throw new Error(`Failed to fetch Word template (${response.status})`);
-      templateBuffer = Buffer.from(await response.arrayBuffer());
-    } catch (e) {
-      console.error("Error fetching Word template:", e);
-      return res.status(500).json({ message: `Error fetching Word template: ${e.message}` });
-    }
-
+    const templateUrl = (classe === 'G7' || classe === 'G8') ? WORD_TEMPLATE_URL : (WORD_TEMPLATE2_URL || WORD_TEMPLATE_URL);
+    const resp = await fetch(templateUrl);
+    const templateBuffer = Buffer.from(await resp.arrayBuffer());
     const zip = new PizZip(templateBuffer);
-    const doc = new Docxtemplater(zip, {
-      paragraphLoop: true,
-      nullGetter: () => "",
-    });
+    const doc = new Docxtemplater(zip, { paragraphLoop: true, nullGetter: () => "" });
 
-    const groupedByDay = {};
-    const dayOrder = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"];
     const datesNode = specificWeekDateRangesNode[weekNumber];
-    let weekStartDateNode = null;
-    if (datesNode?.start) {
-      weekStartDateNode = new Date(datesNode.start + 'T00:00:00Z');
-    }
-    if (!weekStartDateNode || isNaN(weekStartDateNode.getTime())) {
-      return res.status(500).json({ message: `Server dates missing for W${weekNumber}.` });
-    }
+    const weekStart = datesNode?.start ? new Date(datesNode.start + 'T00:00:00Z') : null;
+    if (!weekStart) return res.status(500).json({ message: `Dates missing for W${weekNumber}.` });
 
-    const sampleRow = data[0] || {};
-    // Support both English (Excel) and French legacy column names
-    const jourKey = findKey(sampleRow, 'Day') || findKey(sampleRow, 'Jour');
-    const periodeKey = findKey(sampleRow, 'Period') || findKey(sampleRow, 'Période');
-    const matiereKey = findKey(sampleRow, 'Subject') || findKey(sampleRow, 'Matière');
-    const leconKey = findKey(sampleRow, 'Lesson') || findKey(sampleRow, 'Leçon');
-    const travauxKey = findKey(sampleRow, 'Classwork') || findKey(sampleRow, 'Travaux de classe');
-    const supportKey = findKey(sampleRow, 'Material') || findKey(sampleRow, 'Support');
-    const devoirsKey = findKey(sampleRow, 'Homework') || findKey(sampleRow, 'Devoirs');
-
+    const grouped = {};
     data.forEach(item => {
-      const day = item[jourKey];
-      if (day && dayOrder.includes(day)) {
-        if (!groupedByDay[day]) groupedByDay[day] = [];
-        groupedByDay[day].push(item);
-      }
+        const dName = extractDayNameFromString(item[findKey(item, 'Day')]);
+        if (dName) { if (!grouped[dName]) grouped[dName] = []; grouped[dName].push(item); }
     });
 
-    let plageSemaineText = `Week ${weekNumber}`;
-    if (datesNode?.start && datesNode?.end) {
-      const startD = new Date(datesNode.start + 'T00:00:00Z');
-      const endD = new Date(datesNode.end + 'T00:00:00Z');
-      if (!isNaN(startD.getTime()) && !isNaN(endD.getTime())) {
-        plageSemaineText = `from ${formatDateEnglishNode(startD)} to ${formatDateEnglishNode(endD)}`;
-      }
-    }
-
-    // For G7/G8: Simple structure with Subject, Classwork, Homework grouped by day
-    if (isG7orG8) {
-      const joursData = dayOrder.map(dayName => {
-        if (!groupedByDay[dayName]) return null;
-        
-        const dateOfDay = getDateForDayNameNode(weekStartDateNode, dayName);
-        const formattedDate = dateOfDay ? formatDateEnglishNode(dateOfDay) : dayName;
-        const sortedEntries = groupedByDay[dayName].sort((a, b) => (parseInt(a[periodeKey], 10) || 0) - (parseInt(b[periodeKey], 10) || 0));
-
-        const matieres = sortedEntries.map(item => ({
-          matiere: item[matiereKey] ?? "",
-          travailDeClasse: item[travauxKey] ?? "",
-          devoirs: item[devoirsKey] ?? ""
-        }));
-
-        return { jourDateComplete: formattedDate, matieres: matieres };
-      }).filter(Boolean);
-
-      const templateData = {
-        semaine: weekNumber,
-        classe: classe,
-        jours: joursData,
-        notes: notes || "",
-        plageSemaine: plageSemaineText
+    const joursData = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"].map(dayName => {
+      if (!grouped[dayName]) return null;
+      const sorted = grouped[dayName].sort((a, b) => (parseInt(a[findKey(a, 'Period')], 10) || 0) - (parseInt(b[findKey(b, 'Period')], 10) || 0));
+      return {
+        jourDateComplete: formatDateEnglishNode(getDateForDayNameNode(weekStart, dayName) || new Date()),
+        matieres: sorted.map(item => ({
+          matiere: item[findKey(item, 'Subject')] ?? "",
+          Lecon: formatTextForWord(item[findKey(item, 'Lesson')], { color: 'FF0000' }),
+          travailDeClasse: formatTextForWord(item[findKey(item, 'Classwork')]),
+          Support: formatTextForWord(item[findKey(item, 'Material')], { color: 'FF0000', italic: true }),
+          devoirs: formatTextForWord(item[findKey(item, 'Homework')], { color: '0000FF' })
+        }))
       };
+    }).filter(Boolean);
 
-      doc.render(templateData);
-    } 
-    // For other classes: Detailed structure with Lesson, Classwork, Material, Homework
-    else {
-      const joursData = dayOrder.map(dayName => {
-        if (!groupedByDay[dayName]) return null;
-
-        const dateOfDay = getDateForDayNameNode(weekStartDateNode, dayName);
-        const formattedDate = dateOfDay ? formatDateEnglishNode(dateOfDay) : dayName;
-        const sortedEntries = groupedByDay[dayName].sort((a, b) => (parseInt(a[periodeKey], 10) || 0) - (parseInt(b[periodeKey], 10) || 0));
-
-        const matieres = sortedEntries.map(item => ({
-          matiere: item[matiereKey] ?? "",
-          Lecon: formatTextForWord(item[leconKey], { color: 'FF0000' }),
-          travailDeClasse: formatTextForWord(item[travauxKey]),
-          Support: formatTextForWord(item[supportKey], { color: 'FF0000', italic: true }),
-          devoirs: formatTextForWord(item[devoirsKey], { color: '0000FF' })
-        }));
-
-        return { jourDateComplete: formattedDate, matieres: matieres };
-      }).filter(Boolean);
-
-      const templateData = {
-        semaine: weekNumber,
-        classe: classe,
-        jours: joursData,
-        notes: formatTextForWord(notes),
-        plageSemaine: plageSemaineText
-      };
-
-      doc.render(templateData);
-    }
-
-    // FIX: was using undefined `buf` variable — correctly get buffer from doc
+    doc.render({ semaine: weekNumber, classe, jours: joursData, notes: formatTextForWord(notes || ""), plageSemaine: `Week ${weekNumber}` });
     const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
-    const filename = `plan_s${weekNumber}_${classe.replace(/[^a-z0-9]/gi, '_')}.docx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="plan_w${weekNumber}_${classe}.docx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buf);
-
-  } catch (error) {
-    console.error('❌ Server error./generate-word:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ message: 'Erreur interne /generate-word.' });
-    }
-  }
+  } catch (error) { res.status(500).json({ message: 'Internal error.' }); }
 });
-
-// --------------------- Génération Excel (workbook) ---------------------
 
 app.post('/api/generate-excel-workbook', async (req, res) => {
-  try {
-    const weekNumber = Number(req.body.week);
-    if (!Number.isInteger(weekNumber)) return res.status(400).json({ message: 'Invalid week.' });
-
-    const db = await connectToDatabase();
-    const planDocument = await db.collection('plans').findOne({ week: weekNumber });
-    if (!planDocument?.data?.length) return res.status(404).json({ message: `No data for S${weekNumber}.` });
-
-    // Use standard Excel column names (English)
-    const finalHeaders = ['Teacher', 'Day', 'Period', 'Class', 'Subject', 'Lesson', 'Classwork', 'Material', 'Homework'];
-    const formattedData = planDocument.data.map(item => {
-      const row = {};
-      finalHeaders.forEach(header => {
-        const itemKey = findKey(item, header);
-        row[header] = itemKey ? item[itemKey] : '';
-      });
-      return row;
-    });
-
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(formattedData, { header: finalHeaders });
-    worksheet['!cols'] = [
-      { wch: 20 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 20 },
-      { wch: 45 }, { wch: 45 }, { wch: 25 }, { wch: 45 }
-    ];
-    XLSX.utils.book_append_sheet(workbook, worksheet, `Plan S${weekNumber}`);
-
-    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
-    const filename = `Plan_Hebdomadaire_S${weekNumber}_Complet.xlsx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(buffer);
-  } catch (error) {
-    console.error('❌ Server error./generate-excel-workbook:', error);
-    if (!res.headersSent) res.status(500).json({ message: 'Erreur interne Excel.' });
-  }
+    try {
+        const weekNumber = parseInt(req.body.week, 10);
+        const db = await connectToDatabase();
+        const plan = await db.collection('plans').findOne({ week: weekNumber });
+        if (!plan || !plan.data) return res.status(404).send('No data');
+        const ws = XLSX.utils.json_to_sheet(plan.data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, `W${weekNumber}`);
+        const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        res.setHeader('Content-Disposition', `attachment; filename="Weekly_Plan_W${weekNumber}.xlsx"`);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.send(buf);
+    } catch (e) { res.status(500).send(e.message); }
 });
 
-// --------------- Rapport Excel par classe (toutes semaines) ------------
-
-app.post('/api/full-report-by-class', async (req, res) => {
-  try {
-    const { classe: requestedClass } = req.body;
-    if (!requestedClass) return res.status(400).json({ message: 'Class required.' });
-
-    const db = await connectToDatabase();
-    const allPlans = await db.collection('plans').find({}).sort({ week: 1 }).toArray();
-    if (!allPlans || allPlans.length === 0) return res.status(404).json({ message: 'No data.' });
-
-    const dataBySubject = {};
-    const monthsEnglish = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-    allPlans.forEach(plan => {
-      const weekNumber = plan.week;
-      let monthName = 'N/A';
-      const weekDates = specificWeekDateRangesNode[weekNumber];
-      if (weekDates?.start) {
-        try {
-          const startDate = new Date(weekDates.start + 'T00:00:00Z');
-          monthName = monthsEnglish[startDate.getUTCMonth()];
-        } catch (e) {}
-      }
-
-      (plan.data || []).forEach(item => {
-        // Support English column names (Excel) and French legacy
-        const itemClassKey = findKey(item, 'Class') || findKey(item, 'Classe');
-        const itemSubjectKey = findKey(item, 'Subject') || findKey(item, 'Matière');
-        if (itemClassKey && item[itemClassKey] === requestedClass && itemSubjectKey && item[itemSubjectKey]) {
-          const subject = item[itemSubjectKey];
-          if (!dataBySubject[subject]) dataBySubject[subject] = [];
-          const row = {
-            'Month': monthName,
-            'Week': weekNumber,
-            'Day': item[findKey(item, 'Day') || findKey(item, 'Jour')] || '',
-            'Period': item[findKey(item, 'Period') || findKey(item, 'Période')] || '',
-            'Lesson': item[findKey(item, 'Lesson') || findKey(item, 'Leçon')] || '',
-            'Classwork': item[findKey(item, 'Classwork') || findKey(item, 'Travaux de classe')] || '',
-            'Material': item[findKey(item, 'Material') || findKey(item, 'Support')] || '',
-            'Homework': item[findKey(item, 'Homework') || findKey(item, 'Devoirs')] || ''
-          };
-          dataBySubject[subject].push(row);
-        }
-      });
-    });
-
-    const subjectsFound = Object.keys(dataBySubject);
-    if (subjectsFound.length === 0) return res.status(404).json({ message: `No data for class '${requestedClass}'.` });
-
-    const workbook = XLSX.utils.book_new();
-    const headers = ['Month', 'Week', 'Day', 'Period', 'Lesson', 'Classwork', 'Material', 'Homework'];
-
-    subjectsFound.sort().forEach(subject => {
-      const safeSheetName = subject.substring(0, 30).replace(/[*?:/\\\[\]]/g, '_');
-      const worksheet = XLSX.utils.json_to_sheet(dataBySubject[subject], { header: headers });
-      worksheet['!cols'] = [
-        { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 40 }, { wch: 40 }, { wch: 25 }, { wch: 40 }
-      ];
-      XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName);
-    });
-
-    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
-    const filename = `Rapport_Complet_${requestedClass.replace(/[^a-z0-9]/gi, '_')}.xlsx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(buffer);
-  } catch (error) {
-    console.error('❌ Server error./full-report-by-class:', error);
-    if (!res.headersSent) res.status(500).json({ message: 'Erreur interne du rapport.' });
-  }
-});
-
-// --------------------- Génération IA (REST, v1beta) --------------------
+async function generateSingleAIPlan(rowData, week, templateBuffer) {
+    const AI_API_KEY = GROQ_API_KEY || GEMINI_API_KEY;
+    if (!AI_API_KEY) throw new Error("No AI Key");
+    const enseignant = rowData[findKey(rowData, 'Teacher')] || '';
+    const classe = rowData[findKey(rowData, 'Class')] || '';
+    const matiere = rowData[findKey(rowData, 'Subject')] || '';
+    const lecon = rowData[findKey(rowData, 'Lesson')] || '';
+    const prompt = `Create a detailed 45min lesson plan for: Subject: ${matiere}, Class: ${classe}, Topic: ${lecon}. Return ONLY JSON with fields: TitreUnite, Methodes, Outils, Objectifs, etapes (list with phase, duree, activite), Ressources, Devoirs, DiffLents, DiffTresPerf, DiffTous.`;
+    let aiText = "";
+    if (GROQ_API_KEY) {
+        const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` }, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], response_format: { type: "json_object" } }) });
+        if (groqResp.ok) aiText = (await groqResp.json()).choices[0].message.content;
+    }
+    if (!aiText && GEMINI_API_KEY) {
+        const model = await resolveGeminiModel(GEMINI_API_KEY);
+        const geminiResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } }) });
+        if (geminiResp.ok) aiText = (await geminiResp.json()).candidates[0].content.parts[0].text;
+    }
+    const aiData = JSON.parse(aiText);
+    const doc = new Docxtemplater(new PizZip(templateBuffer), { paragraphLoop: true, linebreaks: true });
+    doc.render({ ...aiData, Semaine: week, Lecon: lecon, Matiere: matiere, Classe: classe, NomEnseignant: enseignant, Deroulement: (aiData.etapes || []).map(e => e.duree).join('\n'), Contenu: (aiData.etapes || []).map(e => `${e.phase}: ${e.activite}`).join('\n\n') });
+    return doc.getZip().generate({ type: 'nodebuffer' });
+}
 
 app.post('/api/generate-ai-lesson-plan', async (req, res) => {
   try {
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-    if (!GEMINI_API_KEY) {
-      return res.status(503).json({ message: "AI service is not initialized. Check the server's GEMINI API key." });
-    }
-
-    const lessonTemplateUrl = process.env.LESSON_TEMPLATE_URL;
-    if (!lessonTemplateUrl) {
-      return res.status(503).json({ message: "Lesson template Word URL is not configured." });
-    }
-
-    const { week, rowData } = req.body;
-    if (!rowData || typeof rowData !== 'object' || !week) {
-      return res.status(400).json({ message: "Row data or week is missing." });
-    }
-
-    // Load Word template
-    let templateBuffer;
-    try {
-      const response = await fetch(lessonTemplateUrl);
-      if (!response.ok) throw new Error(`Failed to download Word template (${response.status})`);
-      templateBuffer = Buffer.from(await response.arrayBuffer());
-    } catch (e) {
-      console.error("Erreur de récupération du modèle Word:", e);
-      return res.status(500).json({ message: "Unable to fetch lesson template from provided URL." });
-    }
-
-    // Extract data — support English (Excel) and French legacy column names
-    const enseignant = rowData[findKey(rowData, 'Teacher') || findKey(rowData, 'Enseignant')] || '';
-    const classe = rowData[findKey(rowData, 'Class') || findKey(rowData, 'Classe')] || '';
-    const matiere = rowData[findKey(rowData, 'Subject') || findKey(rowData, 'Matière')] || '';
-    const lecon = rowData[findKey(rowData, 'Lesson') || findKey(rowData, 'Leçon')] || '';
-    const jour = rowData[findKey(rowData, 'Day') || findKey(rowData, 'Jour')] || '';
-    const seance = rowData[findKey(rowData, 'Period') || findKey(rowData, 'Période')] || '';
-    const support = rowData[findKey(rowData, 'Material') || findKey(rowData, 'Support')] || 'Not specified';
-    const travaux = rowData[findKey(rowData, 'Classwork') || findKey(rowData, 'Travaux de classe')] || 'Not specified';
-    const devoirsPrevus = rowData[findKey(rowData, 'Homework') || findKey(rowData, 'Devoirs')] || 'Not specified';
-
-    // Format date
-    let formattedDate = "";
-    const weekNumber = Number(week);
-    const datesNode = specificWeekDateRangesNode[weekNumber];
-    if (jour && datesNode?.start) {
-      const weekStartDateNode = new Date(datesNode.start + 'T00:00:00Z');
-      if (!isNaN(weekStartDateNode.getTime())) {
-        const dateOfDay = getDateForDayNameNode(weekStartDateNode, jour);
-        if (dateOfDay) formattedDate = formatDateEnglishNode(dateOfDay);
-      }
-    }
-
-    // Prompt + JSON structure
-    const jsonStructure = `{"TitreUnite":"a relevant unit title for the lesson","Methodes":"list of teaching methods","Outils":"list of working tools","Objectifs":"a concise list of learning objectives (skills, knowledge), separated by line breaks (\\\\n). Begin each objective with a dash (-).","etapes":[{"phase":"Introduction","duree":"5 min","activite":"Description of the introduction activity for teacher and students."},{"phase":"Main Activity","duree":"25 min","activite":"Description of the main activity, integrating 'classwork' and 'material' if possible."},{"phase":"Synthesis","duree":"10 min","activite":"Description of the conclusion and review activity."},{"phase":"Closure","duree":"5 min","activite":"Quick summary and homework announcement."}],"Ressources":"specific resources to use.","Devoirs":"a homework suggestion.","DiffLents":"a suggestion to help struggling learners.","DiffTresPerf":"a suggestion to challenge high-performing learners.","DiffTous":"a differentiation suggestion for the whole class."}`;
-
-    let prompt;
-    if (arabicTeachers.includes(enseignant)) {
-      prompt = `بصفتك مساعدًا تربويًا خبيرًا، قم بإنشاء خطة درس مفصلة باللغة العربية مدتها 45 دقيقة. قم ببناء الدرس في مراحل محددة بوقت. ادمج بذكاء ملاحظات المعلم الحالية:
-- المادة: ${matiere}, الفصل: ${classe}, موضوع الدرس: ${lecon}
-- عمل الفصل المخطط له: ${travaux}
-- الدعم / المواد المذكورة: ${support}
-- الواجبات المخطط لها: ${devoirsPrevus}
-قم بإنشاء استجابة بتنسيق JSON صالح فقط. يجب استعمال البنية التالية بقيم مهنية وملموسة (المفاتيح بالإنجليزية): ${jsonStructure}`;
-    } else {
-      // English for all English teachers (and default)
-      prompt = `As an expert pedagogical assistant, create a detailed 45-minute lesson plan in English. Structure the lesson into timed phases. Intelligently integrate the teacher's existing notes:
-- Subject: ${matiere}, Class: ${classe}, Lesson Topic: ${lecon}
-- Planned Classwork: ${travaux}
-- Mentioned Support/Materials: ${support}
-- Planned Homework: ${devoirsPrevus}
-Generate a response in valid JSON format only. Use the following JSON structure with professional and concrete values in English: ${jsonStructure}`;
-    }
-
-    const MODEL_NAME = "gemini-2.5-flash";
-    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_API_KEY}`;
-
-    const requestBody = {
-      contents: [{ role: "user", parts: [{ text: prompt }]}],
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
-    };
-
-    const aiResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!aiResponse.ok) {
-      const errorBody = await aiResponse.json().catch(() => ({}));
-      console.error("Erreur de l'API Google AI:", JSON.stringify(errorBody, null, 2));
-      throw new Error(`[${aiResponse.status} ${aiResponse.statusText}] ${errorBody.error?.message || 'Unknown API error.'}`);
-    }
-
-    const aiResult = await aiResponse.json();
-    const text = aiResult?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-    let aiData;
-    try {
-      aiData = JSON.parse(text);
-    } catch (e) {
-      console.error("Erreur de parsing JSON de la réponse de l'IA:", text);
-      return res.status(500).json({ message: "AI returned a malformed response." });
-    }
-
-    // Prepare DOCX
-    const zip = new PizZip(templateBuffer);
-    const docAI = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => "" });
-
-    let minutageString = "";
-    let contenuString = "";
-    if (aiData.etapes && Array.isArray(aiData.etapes)) {
-      minutageString = aiData.etapes.map(e => e.duree || "").join('\n');
-      contenuString = aiData.etapes.map(e => `▶ ${e.phase || ""}:\n${e.activite || ""}`).join('\n\n');
-    }
-
-    const templateData = {
-      ...aiData,
-      Semaine: week,
-      Lecon: lecon,
-      Matiere: matiere,
-      Classe: classe,
-      Jour: jour,
-      Seance: seance,
-      NomEnseignant: enseignant,
-      Date: formattedDate,
-      Deroulement: minutageString,
-      Contenu: contenuString,
-    };
-
-    docAI.render(templateData);
-    const buf = docAI.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
-
-    const sanitizeForFilename = (str) => {
-      if (typeof str !== 'string') str = String(str);
-      const normalized = str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      return normalized
-        .replace(/\s+/g, '-')
-        .replace(/[^a-zA-Z0-9-]/g, '_')
-        .replace(/__+/g, '_');
-    };
-
-    const filename = `LessonPlan-${sanitizeForFilename(matiere)}-P${sanitizeForFilename(String(seance))}-${sanitizeForFilename(classe)}-Week${weekNumber}.docx`;
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const respTemplate = await fetch(LESSON_TEMPLATE_URL);
+    const buf = await generateSingleAIPlan(req.body.rowData, req.body.week, Buffer.from(await respTemplate.arrayBuffer()));
+    res.setHeader('Content-Disposition', `attachment; filename="AI_Plan.docx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(buf);
-
-  } catch (error) {
-    console.error('❌ Server error./generate-ai-lesson-plan:', error);
-    if (!res.headersSent) {
-      const errorMessage = error.message || "Erreur interne.";
-      res.status(500).json({ message: `Internal error during AI generation: ${errorMessage}` });
-    }
-  }
+  } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
-// Démarrer le serveur seulement si ce fichier est exécuté directement
-if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur Plans Hebdomadaires démarré sur le port ${PORT}`);
-    console.log(`📝 Application accessible à l'adresse : http://localhost:${PORT}`);
-  });
-}
+app.post('/api/generate-multiple-ai-lesson-plans', async (req, res) => {
+    try {
+        const { week, rowsData } = req.body;
+        const archive = archiver('zip');
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="AI_Plans_W${week}.zip"`);
+        archive.pipe(res);
+        const respTemplate = await fetch(LESSON_TEMPLATE_URL);
+        const templateBuffer = Buffer.from(await respTemplate.arrayBuffer());
+        for (const row of rowsData) {
+            try {
+                const buf = await generateSingleAIPlan(row, week, templateBuffer);
+                archive.append(buf, { name: `AI_Plan_${sanitizeForFilename(row[findKey(row, 'Subject')] || 'Plan')}_${row[findKey(row, 'Class')]}.docx` });
+            } catch (e) { console.error("Failed for row", e); }
+        }
+        archive.finalize();
+    } catch (error) { res.status(500).json({ message: error.message }); }
+});
 
+app.get('/api/vapid-public-key', (req, res) => res.json({ publicKey: VAPID_PUBLIC_KEY }));
+app.post('/api/subscribe-push', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    await db.collection('pushSubscriptions').updateOne({ username: req.body.username }, { $set: { subscription: req.body.subscription, updatedAt: new Date() } }, { upsert: true });
+    res.status(200).json({ message: 'Subscribed.' });
+  } catch (e) { res.status(500).send(e.message); }
+});
+
+app.post('/api/notify-incomplete-teachers', async (req, res) => {
+    try {
+        const { week, incompleteTeachers } = req.body;
+        const db = await connectToDatabase();
+        const subs = await db.collection('pushSubscriptions').find({ username: { $in: Object.keys(incompleteTeachers) } }).toArray();
+        for (const sub of subs) {
+            webpush.sendNotification(sub.subscription, JSON.stringify({ title: 'Plan Incomplete', body: `W${week} is incomplete.`, data: { url: '/' } })).catch(err => {
+                if (err.statusCode === 410) db.collection('pushSubscriptions').deleteOne({ username: sub.username });
+            });
+        }
+        res.json({ success: true });
+    } catch (e) { res.status(500).send(e.message); }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Server running on port ${PORT}`); });
+global.appInstance = app;
 module.exports = app;
